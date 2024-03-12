@@ -5,7 +5,7 @@ import numpy as np
 import tensorflow as tf
 
 # sys.path.append('../Lib_Utils')
-import manipnet.utils.utils as utils
+import manipnet_v2.utils.utils as utils
 
 
 class NeuralNetwork(object):

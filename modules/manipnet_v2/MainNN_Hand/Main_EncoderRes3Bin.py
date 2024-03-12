@@ -4,11 +4,11 @@ import tensorflow as tf
 import sys
 
 # sys.path.append('../Lib_Opt')
-from manipnet.opt.MLP_new import MLP
-from manipnet.opt.NeuralNetwork import NeuralNetwork
+from manipnet_v2.opt.MLP_new import MLP
+from manipnet_v2.opt.NeuralNetwork import NeuralNetwork
 
 # sys.path.append('../Lib_Utils')
-import manipnet.utils.utils as utils
+import manipnet_v2.utils.utils as utils
 
 
 class MainNN(NeuralNetwork):
