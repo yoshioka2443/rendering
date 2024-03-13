@@ -4,16 +4,19 @@
 - tensorflow 1.15はpython<=3.7に対応
 - pyglet(pyrender, trimeshの依存先)の最新版は>=3.8に対応
 - pytorch3dは>=3.8に対応
+- rednerは>=3.6に対応
 
 対応策
-1. pygletではなくosmesaかeglを用いてpyrenderなどでレンダリング (python3.7)
-2. tensorflow 2以降に対応できるようにmanipnetのコードを変換 (python3.8)
-3. pytorchなどでmanipnetを追実装（end2endで学習できるようにすることを考えるとこれがベストかもしれない）
+1. rednerを使用する．
+2. pygletではなくosmesaかeglを用いてpyrenderなどでレンダリング (python3.7)
+3. tensorflow 2以降に対応できるようにmanipnetのコードを変換 (python3.8)
+4. pytorchなどでmanipnetを追実装（end2endで学習できるようにすることを考えるとこれがベストかもしれない）
 
 ||python|3.7|3.8|
 |---|---|---|---|
 |tensorflow1.15|<=3.7|o|x|
 |tensorflow2|3.6～3.9|o|o|
+|redner|>=3.6|||
 |pytorch3d|>=3.8|x|o|
 |trimesh(interactive)|>=3.7|o|o|
 |trimesh(pyglet)|>=3.8|x|o|
@@ -45,6 +48,26 @@ data/mano_v1_2/models/mano
  |- MANO_RIGHT.pkl
 ```
 
+### python3.7の環境
+- tensorflow1.15でmanipnetを動かせる環境
+- rednerを用いてレンダリング
+```
+conda create -n render-hand python=3.7
+source /opt/conda/etc/profile.d/conda.sh
+conda activate render-hand
+```
+- pip install
+```
+pip install smplx scipy chumpy trimesh plotly matplotlib
+```
+- python>=3.7をサポートしているpythorch=1.12をインストール (https://pytorch.org/blog/deprecation-cuda-python-support/)
+```
+pip install torch==1.12.1+cu113 torchvision==0.13.1+cu113 torchaudio==0.12.1 --extra-index-url https://download.pytorch.org/whl/cu113
+```
+- renderをインストール
+```
+pip install --upgrade redner-gpu
+```
 
 
 ### python3.8の環境
@@ -65,30 +88,6 @@ pip install git+https://github.com/facebookresearch/pytorch3d.git
 ```
 pip install smplx scipy chumpy trimesh plotly matplotlib
 ```
-
-### python3.7の環境
-- tensorflow1.15でmanipnetを動かせる環境
-```
-conda create -n py3.7 python=3.7
-source /opt/conda/etc/profile.d/conda.sh
-conda activate py3.7
-```
-pip install
-```
-pip install smplx scipy chumpy trimesh plotly matplotlib
-```
-python>=3.7をサポートしているpythorch=1.12をインストール (https://pytorch.org/blog/deprecation-cuda-python-support/)
-```
-pip install torch==1.12.1+cu113 torchvision==0.13.1+cu113 torchaudio==0.12.1 --extra-index-url https://download.pytorch.org/whl/cu113
-```
-
-
-
-
-
-### python3.10の環境
-- bpy4
-
 
 ### tf1からtf2への変換
 ```
