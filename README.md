@@ -68,6 +68,10 @@ pip install torch==1.12.1+cu113 torchvision==0.13.1+cu113 torchaudio==0.12.1 --e
 ```
 pip install --upgrade redner-gpu
 ```
+- tensorflow==1.15をインストール
+```
+pip install tensorflow==1.15 protobuf==3.20
+```
 
 
 ### python3.8の環境
