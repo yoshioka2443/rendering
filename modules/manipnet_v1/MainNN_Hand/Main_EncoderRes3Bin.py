@@ -4,11 +4,11 @@ import tensorflow as tf
 import sys
 
 # sys.path.append('../Lib_Opt')
-from manipnet.opt.MLP_new import MLP
-from manipnet.opt.NeuralNetwork import NeuralNetwork
+from modules.manipnet_v1.opt.MLP_new import MLP
+from modules.manipnet_v1.opt.NeuralNetwork import NeuralNetwork
 
 # sys.path.append('../Lib_Utils')
-import manipnet.utils.utils as utils
+import modules.manipnet_v1.utils.utils as utils
 
 
 class MainNN(NeuralNetwork):
@@ -224,3 +224,31 @@ class MainNN(NeuralNetwork):
                 saver.save(sess, self.save_path + '/' + name_model, global_step=e)
 
         print('Learning Finished')
+
+    def Test(self,               
+            # Tensorflow Session
+            sess,
+            batch_size=32,
+            ):
+
+        total_batch = int(self.data_size / batch_size)
+        # Load Test Data
+        self.LoadTestData(path_test)
+        if self.data_size_test > batch_size:
+                batch_size_test = batch_size
+        else:
+            batch_size_test = self.data_size_test
+        total_batch_test = int(self.data_size_test / batch_size_test)
+
+        # tf.saved_model.load(
+        #     sess, tags, export_dir, import_scope=None, 
+        # )
+
+        for i in range(total_batch_test):
+            batch_xs = self.input_test[i * batch_size_test:(i + 1) * batch_size_test]
+            batch_ys = self.output_test[i * batch_size_test:(i + 1) * batch_size_test]
+            feed_dict = {self.nn_X: batch_xs,
+                            self.nn_Y: batch_ys,
+                            self.nn_keep_prob_main: 1.0,
+                            self.nn_keep_prob_encoders: [1.0] * len(keep_prob_encoders)}
+            l, = sess.run([self.mse_loss], feed_dict=feed_dict)
