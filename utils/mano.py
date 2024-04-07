@@ -41,7 +41,7 @@ class ManoLayer:
         hand_pose = torch.from_numpy(anno['handPose']).view(-1, 3)[1:].view(1, -1).float()#.cuda()
         betas = torch.from_numpy(anno['handBeta']).view(1, -1).float()#.cuda()
         trans = torch.from_numpy(anno['handTrans']).view(1, 3).float()#.cuda()
-        output = self.mano_layer['right' if is_rhand else 'left'](global_orient=root_pose, hand_pose=hand_pose, betas=betas, transl=trans)
+        output = self.mano_layer['right' if is_rhand else 'left'](global_orient=root_pose, hand_pose=hand_pose, betas=betas, transl=trans, return_full_pose=True)
         return output#.vertices
 
 if __name__ == '__main__':
