@@ -3,3 +3,5 @@ data/*
 */.pytest
 *.pyc
 output/*
+.DS_Store
+modules/ManipNet
