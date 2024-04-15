@@ -5,3 +5,5 @@ data/*
 output/*
 .mono/*
 notebooks/*.ipynb
+.DS_Store
+modules/ManipNet
