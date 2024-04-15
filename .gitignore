@@ -3,3 +3,5 @@ data/*
 */.pytest
 *.pyc
 output/*
+.mono/*
+notebooks/*.ipynb
