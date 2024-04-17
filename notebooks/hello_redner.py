@@ -15,21 +15,26 @@ from utils.mano import ManoLayer
 
 bg_img = np.array(Image.open('data/HO3D_v3/train/ABF10/rgb/0000.jpg'), dtype=np.float32)/255.0
 anno = load_ho_meta('data/HO3D_v3/train/ABF10/meta/0000.pkl')
-mano = ManoLayer()
-mano_verts = mano(anno)
+mano_layer = ManoLayer()
+mano_layer.load_nimble()
+mano = mano_layer(anno)
 
 resolution = bg_img.shape[:2]
 
+print("uv shape", mano_layer.uv.shape, mano_layer.nimble_uvs.shape)
+
 mano_object = pyredner.Object(
-    vertices=mano_verts[0], 
-    indices=mano.faces, 
-    uvs=mano.uv,
+    vertices = mano.vertices[0], 
+    indices = mano_layer.faces, 
+    uvs = torch.tensor(mano_layer.nimble_mano_uvs, dtype=torch.float32),
+    uv_indices = torch.tensor(mano_layer.faces, dtype=torch.int32),
     material=pyredner.Material(
-        diffuse_reflectance=pyredner.Texture(mano.map.to(pyredner.get_device()))
+        diffuse_reflectance = mano_layer.tex_diff_mean.to(pyredner.get_device()),
+        # diffuse_reflectance=pyredner.Texture(mano_layer.map.to(pyredner.get_device()))
         # diffuse_reflectance=torch.tensor((0.5, 0.5, 0.5), device=pyredner.get_device())))
     )
 )
-print(mano.faces.dtype)
+
 
 world2cam = torch.eye(4)
 R = torch.diag(torch.tensor([-1.,1.,-1.]))
@@ -57,10 +62,12 @@ camera = pyredner.Camera(
     resolution=resolution,
 )
 print(camera.__dict__)
-dirlight = pyredner.DirectionalLight(
-    direction = torch.tensor([0.0, 0.0, -1.0]), 
-    intensity = torch.ones(3)*3.0,
-)
+# dirlight = pyredner.DirectionalLight(
+#     direction = torch.tensor([0.0, 0.0, -1.0]), 
+#     intensity = torch.ones(3)*3.0,
+# )
+dirlight = pyredner.AmbientLight(intensity=torch.tensor([1., 1., 1.]))
+
 # envmap = pyredner.EnvironmentMap(torch.tensor(bg_img))
 
 objects = pyredner.load_obj('data/models/021_bleach_cleanser/textured_simple.obj', return_objects=True)
@@ -92,5 +99,7 @@ fig, axs = plt.subplots(1, 2, figsize=(10, 5))
 axs[0].imshow(bg_img)
 axs[1].imshow(bg_img)
 axs[1].imshow(torch.pow(render, 1.0/2.2).cpu())
+plt.show()
 
 
+# %%
