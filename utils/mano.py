@@ -4,6 +4,7 @@ import torch
 import numpy as np
 import trimesh
 import pyredner
+import openmesh
 # from trimesh import load_mesh
 
 class ManoLayer:
@@ -13,12 +14,18 @@ class ManoLayer:
             'right': smplx.create(self.smplx_path, 'mano', use_pca=False, is_rhand=True, flat_hand_mean=True),
             'left': smplx.create(self.smplx_path, 'mano', use_pca=False, is_rhand=False, flat_hand_mean=True),
         }
-        self.faces = torch.tensor(self.mano_layer['right'].faces.astype(np.int32), dtype=torch.int32)
-        # self.mesh = trimesh.load_mesh('data/mano_v1_2/MANO_UV_right.obj')
+        self.faces = torch.tensor(self.mano_layer['right'].faces.astype(np.int32), dtype=torch.long)
+        # self.mesh = trimesh.load_mesh('data/mano_v1_2/MANO_UV_right.obj', process=False)
         # self.uv = torch.tensor(self.mesh.visual.uv, dtype=torch.float32)
-        material_map, mesh_list, light_map = pyredner.load_obj('data/mano_v1_2/MANO_UV_right.obj', return_objects=True)[0]
-        self.uv = mesh_list.uvs
-        self.face_uvs = mesh_list.uv_indices
+        # self.faces = torch.tensor(self.mesh.faces, dtype=torch.long)
+        
+        self.mesh = openmesh.read_trimesh('data/mano_v1_2/MANO_UV_right.obj', vertex_tex_coord=True)
+        self.uv = torch.tensor(self.mesh.vertex_texcoords2D(), dtype=torch.float32)
+        # self.faces = torch.tensor(self.mesh.face_v(), dtype=torch.float32)
+
+        # material_map, mesh_list, light_map = pyredner.load_obj('data/mano_v1_2/MANO_UV_right.obj', return_objects=True)[0]
+        # self.uv = mesh_list.uvs
+        # self.face_uvs = mesh_list.uv_indices
 
         self.map = torch.ones([256, 256, 3], dtype=torch.float32) * torch.tensor([[[1.0, 0.5, 0.5]]])
         self.parents = self.mano_layer['right'].parents
@@ -152,15 +159,80 @@ if __name__ == '__main__':
     from utils import load_ho_meta
     from PIL import Image
     import matplotlib.pyplot as plt
-
+    from matplotlib import patches
+    from matplotlib.collections import PatchCollection
+    
     anno = load_ho_meta()
     mano = ManoLayer()
-    print(mano.mano_layer['right'].__dict__.keys())
+    # print(mano.mano_layer['right'].__dict__.keys())
+    print('# mano object properties')
     for k, v in mano(anno).__dict__.items():
         if v is not None:
-            print(k, v.shape)
+            print(k, ":", v.shape)
         # print(k, v)
     
+    print('# mano layer properties')
+    for k, v in mano.mano_layer['right'].__dict__.items():
+        # print(k, type(v))
+        if isinstance(v, np.ndarray) and v is not None:
+            print(k, ":", v.shape)
+        # # print(k, v)
+
+    print(mano.mano_layer['right'].faces.max())
+    # print(mano.mesh.faces.max())
+
+    import plotly.graph_objects as go
+    # fig = go.Figure()
+    # fig.add_trace(
+    #     go.Mesh3d(
+    #         x=mano.mesh.point[:, 0],
+    #         y=mano.mesh.vertices[:, 1],
+    #         z=mano.mesh.vertices[:, 2],
+    #         i=mano.mesh.faces[:, 0],
+    #         j=mano.mesh.faces[:, 1],
+    #         k=mano.mesh.faces[:, 2],
+    #         opacity=0.5,
+    #     )
+    # )
+    # fig.show()
+
+    root_pose = torch.zeros(1, 3)
+    hand_pose = torch.zeros(1, 45)
+    betas = torch.zeros(1, 10)
+    trans = torch.tensor([[-0.6, 0.2, -0.05]])
+    mano_obj = mano.mano_layer['right'](
+        global_orient=root_pose, hand_pose=hand_pose, betas=betas, transl=trans, return_full_pose=True)
+    
+    # fig = go.Figure()
+    # fig.add_trace(
+    #     go.Mesh3d(
+    #         x=mano_obj.vertices[0][:, 0].detach(),
+    #         y=mano_obj.vertices[0][:, 1].detach(),
+    #         z=mano_obj.vertices[0][:, 2].detach(),
+    #         i=mano.mano_layer['right'].faces[:, 0],
+    #         j=mano.mano_layer['right'].faces[:, 1],
+    #         k=mano.mano_layer['right'].faces[:, 2],
+    #         opacity=0.5,
+    #     )
+    # )
+    # fig.show()
+
+
+    fig, ax = plt.subplots()
+    # ax.scatter(
+    #     mano.uv[:, 0] * 256,
+    #     (1-mano.uv[:, 1]) * 256,
+    # )
+    print(mano.uv[mano.faces].shape)
+    patch_list = [
+        patches.Polygon(f) for f in mano.uv[mano.faces]
+    ]
+    # facecolors = np.linspace(0, 1, len(patches))
+    colors = plt.cm.viridis(np.linspace(0, 1, len(patch_list)))
+    pc = PatchCollection(patch_list, alpha=1, facecolor=colors, edgecolor='white')
+    ax.add_collection(pc)
+
+
     # mano = ManoLayer()
     mano.load_nimble()
     print(mano.nimble_faces.shape)
@@ -188,6 +260,7 @@ if __name__ == '__main__':
     print(f"face_uvs {mano.nimble_face_uvs.shape}", mano.nimble_face_uvs.max())
     print(f"lmk_faces_idx {mano.lmk_faces_idx.shape}")
     print(f"lmk_bary_coords {mano.lmk_bary_coords.shape}")
+    print("mano.nimble_mano_uv_bary:", mano.nimble_mano_uv_bary.shape)
 
     # nimble_uvw = torch.cat([
     #     mano.nimble_uvs, 
@@ -204,23 +277,35 @@ if __name__ == '__main__':
 
 
     img = mano.tex_diff_mean
-    fig, axs = plt.subplots(4, 5, figsize=(20, 16))
-    axs = axs.ravel()
-    for nimble_mano_uvs, ax in zip(mano.nimble_mano_uv_bary, axs):
-        ax.axis('off')
-        ax.imshow(img)
-        ax.scatter(
-            nimble_mano_uvs[:, 0] * img.shape[0], 
-            (1-nimble_mano_uvs[:, 1]) * img.shape[1], 
-            s=1, c=np.linspace(0,1,778))
-        # plt.scatter(mano.nimble_uvs[:, 0] * img.shape[0], (1-mano.nimble_uvs[:, 1]) * img.shape[1], s=0.1)
-    plt.show()
+    # fig, axs = plt.subplots(4, 5, figsize=(20, 16))
+    # axs = axs.ravel()
+    # for nimble_mano_uvs, ax in zip(mano.nimble_mano_uv_bary, axs):
+    #     ax.axis('off')
+    #     ax.imshow(img)
+    #     ax.scatter(
+    #         nimble_mano_uvs[:, 0] * img.shape[0], 
+    #         (1-nimble_mano_uvs[:, 1]) * img.shape[1], 
+    #         s=1, c=np.linspace(0,1,778))
+    #     # plt.scatter(mano.nimble_uvs[:, 0] * img.shape[0], (1-mano.nimble_uvs[:, 1]) * img.shape[1], s=0.1)
+    # plt.show()
 
-    plt.imshow(img)
-    plt.scatter(
-        mano.nimble_mano_uvs[:, 0] * img.shape[0], 
-        (1-mano.nimble_mano_uvs[:, 1]) * img.shape[1], 
+    fig, ax = plt.subplots()
+    # ax.imshow(img)
+    ax.scatter(
+        mano.nimble_mano_uv_bary[0][:, 0], #* img.shape[0], 
+        (1-mano.nimble_mano_uv_bary[0][:, 1]), #* img.shape[1], 
         s=1, c=np.linspace(0,1,778))
+    # print(mano.mesh.vertices.shape)
+    print(mano.uv.shape)
+    # print(mano.faces.max())
+    patch_list = [
+        patches.Polygon(f) for f in mano.nimble_mano_uv_bary[0][mano.faces, :]
+    ]
+    # facecolors = np.linspace(0, 1, len(patches))
+    colors = plt.cm.viridis(np.linspace(0, 1, len(patch_list)))
+    pc = PatchCollection(patch_list, alpha=1, facecolor=colors, edgecolor='white')
+    ax.add_collection(pc)
+
     plt.show()
     
 

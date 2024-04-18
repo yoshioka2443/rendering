@@ -3,7 +3,6 @@ import os
 os.chdir(os.path.join(os.path.dirname(__file__), '..'))
 print(os.getcwd())
 
-# %%
 import pyredner # pyredner will be the main Python module we import for redner.
 import torch # We also import PyTorch
 from PIL import Image
@@ -25,8 +24,8 @@ print("uv shape", mano_layer.uv.shape, mano_layer.nimble_uvs.shape)
 
 mano_object = pyredner.Object(
     vertices = mano.vertices[0], 
-    indices = mano_layer.faces, 
-    uvs = torch.tensor(mano_layer.nimble_mano_uvs, dtype=torch.float32),
+    indices = mano_layer.faces.to(torch.int32), 
+    uvs = torch.tensor(mano_layer.nimble_mano_uv_bary[0], dtype=torch.float32),
     uv_indices = torch.tensor(mano_layer.faces, dtype=torch.int32),
     material=pyredner.Material(
         diffuse_reflectance = mano_layer.tex_diff_mean.to(pyredner.get_device()),
@@ -84,7 +83,7 @@ scene = pyredner.Scene(
     camera = camera, 
     objects = [
         mano_object, 
-        obj_object,
+        # obj_object,
         ]
     )
 
