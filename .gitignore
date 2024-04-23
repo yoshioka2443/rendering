@@ -7,3 +7,5 @@ output/*
 notebooks/*.ipynb
 .DS_Store
 modules/ManipNet
+*.exr
+results/*

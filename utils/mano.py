@@ -5,6 +5,8 @@ import numpy as np
 import trimesh
 import pyredner
 import openmesh
+import imageio
+import os
 # from trimesh import load_mesh
 
 class ManoLayer:
@@ -17,15 +19,16 @@ class ManoLayer:
         self.faces = torch.tensor(self.mano_layer['right'].faces.astype(np.int32), dtype=torch.long)
         # self.mesh = trimesh.load_mesh('data/mano_v1_2/MANO_UV_right.obj', process=False)
         # self.uv = torch.tensor(self.mesh.visual.uv, dtype=torch.float32)
-        # self.faces = torch.tensor(self.mesh.faces, dtype=torch.long)
-        
-        self.mesh = openmesh.read_trimesh('data/mano_v1_2/MANO_UV_right.obj', vertex_tex_coord=True)
-        self.uv = torch.tensor(self.mesh.vertex_texcoords2D(), dtype=torch.float32)
-        # self.faces = torch.tensor(self.mesh.face_v(), dtype=torch.float32)
+        self.mesh = trimesh.load_mesh(
+                'data/mano_v1_2/MANO_UV_right.obj', 
+                process=False, maintain_order=False
+            )
+        self.face_uvs = torch.tensor(self.mesh.faces, dtype=torch.long)
+        self.uv = torch.tensor(self.mesh.visual.uv, dtype=torch.float32)
 
-        # material_map, mesh_list, light_map = pyredner.load_obj('data/mano_v1_2/MANO_UV_right.obj', return_objects=True)[0]
-        # self.uv = mesh_list.uvs
-        # self.face_uvs = mesh_list.uv_indices
+        # self.mesh = openmesh.read_trimesh('data/mano_v1_2/MANO_UV_right.obj', vertex_tex_coord=True)
+        # self.uv = torch.tensor(self.mesh.vertex_texcoords2D(), dtype=torch.float32)
+        # self.faces = torch.tensor(self.mesh.face_v(), dtype=torch.float32)
 
         self.map = torch.ones([256, 256, 3], dtype=torch.float32) * torch.tensor([[[1.0, 0.5, 0.5]]])
         self.parents = self.mano_layer['right'].parents
@@ -37,6 +40,13 @@ class ManoLayer:
             496 470 469 507 565 550 564 141 379 386 358 358 357 397 454 439 453 171\
             194  48  47 238 341 342 329 342 171 704 700 714 760 756 761 763 764 768\
             744 735 745 759 763 683 695 159 157 157  99  27  25  24".split()).astype(int)
+
+    def load_textures(self, tex_path="data/NIMBLE/tex_mano"):
+        self.tex_diffuse_mean = torch.tensor(imageio.imread(os.path.join(tex_path, 'tex_diffuse_mean.png')).astype(np.float32)[..., :3] / 255.0)
+        self.tex_spec_mean = torch.tensor(imageio.imread(os.path.join(tex_path, 'tex_spec_mean.png')).astype(np.float32)[..., :3] / 255.0)
+        
+        self.tex_diffuse_mean = torch.pow(self.tex_diffuse_mean, 2.2)
+        self.tex_spec_mean = torch.pow(self.tex_spec_mean, 2.2)
 
     def __call__(self, anno, is_rhand=True):
         '''
@@ -85,9 +95,9 @@ class ManoLayer:
         self.nimble_uvs = torch.tensor(np.array(vts).reshape(-1, 2), dtype=torch.float32)
         # print(fvs.shape, fvts.shape, vts.shape)
 
-        self.tex_diff_basis = torch.tensor(self.nimble_data['NIMBLE_TEX_DICT']['diffuse']['basis'])
-        self.tex_diff_mean  = torch.tensor(self.nimble_data['NIMBLE_TEX_DICT']['diffuse']['mean']).reshape(1024,1024,3)[..., [2,1,0]]
-        self.tex_diff_std   = torch.tensor(self.nimble_data['NIMBLE_TEX_DICT']['diffuse']['std'])
+        # self.tex_diff_basis = torch.tensor(self.nimble_data['NIMBLE_TEX_DICT']['diffuse']['basis'])
+        # self.tex_diff_mean  = torch.tensor(self.nimble_data['NIMBLE_TEX_DICT']['diffuse']['mean']).reshape(1024,1024,3)[..., [2,1,0]]
+        # self.tex_diff_std   = torch.tensor(self.nimble_data['NIMBLE_TEX_DICT']['diffuse']['std'])
         # print(self.tex_diff_basis.shape, self.tex_diff_mean.shape, self.tex_diff_std.shape)
 
         self.lmk_faces_idx = self.nimble_data['NIMBLE_MANO_VREG']['lmk_faces_idx']

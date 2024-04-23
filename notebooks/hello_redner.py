@@ -7,7 +7,7 @@ import pyredner # pyredner will be the main Python module we import for redner.
 import torch # We also import PyTorch
 from PIL import Image
 import numpy as np
-from matplotlib.pyplot import imshow
+import matplotlib.pyplot as plt
 from utils.utils import load_ho_meta, apply_transform_to_mesh
 from utils.mano import ManoLayer
 
@@ -15,22 +15,58 @@ from utils.mano import ManoLayer
 bg_img = np.array(Image.open('data/HO3D_v3/train/ABF10/rgb/0000.jpg'), dtype=np.float32)/255.0
 anno = load_ho_meta('data/HO3D_v3/train/ABF10/meta/0000.pkl')
 mano_layer = ManoLayer()
-mano_layer.load_nimble()
+mano_layer.load_textures()
+# mano_layer.load_nimble()
 mano = mano_layer(anno)
 
 resolution = bg_img.shape[:2]
 
-print("uv shape", mano_layer.uv.shape, mano_layer.nimble_uvs.shape)
+# print("uv shape", mano_layer.uv.shape, mano_layer.nimble_uvs.shape)
+
+def add_triangles2D(ax, uv, faces, **kwargs):
+    from matplotlib import patches
+    from matplotlib.collections import PatchCollection
+    print('uv.shape', uv.shape)
+    uv_image = np.stack([uv[..., 0], 1-uv[..., 1]], -1) * 1024
+    print(uv_image)
+    patch_list = [
+        patches.Polygon(f) for f in uv_image[faces]
+    ]
+    colors = plt.cm.viridis(np.linspace(0, 1, len(patch_list)))
+    pc = PatchCollection(patch_list, alpha=1, facecolor='None', edgecolor='white', **kwargs)
+    ax.add_collection(pc)
+
+# fig, ax = plt.subplots()
+# plt.imshow(mano_layer.tex_diff_mean)
+# add_triangles2D(ax, mano_layer.uv, mano_layer.face_uvs, cmap='viridis')
+# plt.show()
+
+
+# 
+
+x = np.linspace(0, 1, 1024)
+y = np.linspace(0, 1, 1024)
+X, Y = np.meshgrid(x, y)
+uv_tex = torch.tensor(np.stack([X, Y, np.zeros_like(X)], -1), dtype=torch.float32)
+
+fig, ax = plt.subplots()
+plt.imshow(uv_tex)
+add_triangles2D(ax, mano_layer.uv, mano_layer.face_uvs, cmap='viridis')
+plt.show()
+
+
+
+uvs = torch.stack([mano_layer.uv[..., 0], 1-mano_layer.uv[..., 1]], -1)
 
 mano_object = pyredner.Object(
     vertices = mano.vertices[0], 
     indices = mano_layer.faces.to(torch.int32), 
-    uvs = torch.tensor(mano_layer.nimble_mano_uv_bary[0], dtype=torch.float32),
-    uv_indices = torch.tensor(mano_layer.faces, dtype=torch.int32),
+    uvs = torch.tensor(uvs, dtype=torch.float32),
+    uv_indices = torch.tensor(mano_layer.face_uvs, dtype=torch.int32),
     material=pyredner.Material(
-        diffuse_reflectance = mano_layer.tex_diff_mean.to(pyredner.get_device()),
-        # diffuse_reflectance=pyredner.Texture(mano_layer.map.to(pyredner.get_device()))
-        # diffuse_reflectance=torch.tensor((0.5, 0.5, 0.5), device=pyredner.get_device())))
+        # diffuse_reflectance = uv_tex.to(pyredner.get_device()),
+        diffuse_reflectance = mano_layer.tex_diffuse_mean.to(pyredner.get_device()),
+        specular_reflectance = mano_layer.tex_spec_mean.to(pyredner.get_device()),
     )
 )
 
@@ -69,6 +105,7 @@ dirlight = pyredner.AmbientLight(intensity=torch.tensor([1., 1., 1.]))
 
 # envmap = pyredner.EnvironmentMap(torch.tensor(bg_img))
 
+
 objects = pyredner.load_obj('data/models/021_bleach_cleanser/textured_simple.obj', return_objects=True)
 obj_object = pyredner.Object(
     vertices=apply_transform_to_mesh(objects[0].vertices, anno),
@@ -92,12 +129,12 @@ scene = pyredner.Scene(
 render = pyredner.render_deferred(scene, lights=[dirlight], alpha=True)
     
 
-import matplotlib.pyplot as plt
 
 fig, axs = plt.subplots(1, 2, figsize=(10, 5))
 axs[0].imshow(bg_img)
 axs[1].imshow(bg_img)
-axs[1].imshow(torch.pow(render, 1.0/2.2).cpu())
+axs[1].imshow(render.cpu())
+# axs[1].imshow(torch.pow(render, 1.0/2.2).cpu())
 plt.show()
 
 
