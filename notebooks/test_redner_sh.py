@@ -8,10 +8,12 @@ import torch # We also import PyTorch
 from PIL import Image
 import numpy as np
 import matplotlib.pyplot as plt
-from utils.utils import load_ho_meta, apply_transform_to_mesh
+from utils.utils import load_ho_meta, apply_transform_to_mesh, calc_vertex_normals
 from utils.mano import ManoLayer
+from pathlib import Path
+import math
 
-
+# %%
 bg_img = np.array(Image.open('data/HO3D_v3/train/ABF10/rgb/0000.jpg'), dtype=np.float32)/255.0
 anno = load_ho_meta('data/HO3D_v3/train/ABF10/meta/0000.pkl')
 mano_layer = ManoLayer()
@@ -62,8 +64,13 @@ dirlight = pyredner.AmbientLight(intensity=torch.tensor([1., 1., 1.]))
 
 # envmap = pyredner.EnvironmentMap(torch.tensor(bg_img))
 
-
+# %%
 objects = pyredner.load_obj('data/models/021_bleach_cleanser/textured_simple.obj', return_objects=True)
+
+# sRGB to Linear RGB
+object_diffuse_texels = objects[0].material.diffuse_reflectance._texels
+objects[0].material.diffuse_reflectance._texels = torch.pow(object_diffuse_texels, 2.2)
+
 obj_object = pyredner.Object(
     vertices=apply_transform_to_mesh(objects[0].vertices, anno),
     indices=objects[0].indices, 
@@ -77,29 +84,31 @@ scene = pyredner.Scene(
     camera = camera, 
     objects = [
         mano_object, 
-        # obj_object,
+        obj_object,
         ]
     )
 
 # Render the scene.
-# render_img = pyredner.render_albedo(scene, alpha=True)
-render_img = pyredner.render_deferred(scene, lights=[dirlight], alpha=True)
+render_albedo = pyredner.render_albedo(scene, alpha=True)
+# render_deferred = pyredner.render_deferred(scene, lights=[dirlight], alpha=True)
 # print(render_img.shape)
 
-mask = render_img[..., -1]
+mask = render_albedo[..., -1]
 
-fig, axs = plt.subplots(1, 2, figsize=(10, 5))
-axs[0].imshow(bg_img)
-axs[1].imshow(bg_img)
-# axs[1].imshow(render.cpu())
-axs[1].imshow(torch.pow(render_img, 1.0/2.2).cpu())
+show_dict = {
+    'input': bg_img,
+    'albedo': torch.pow(render_albedo, 1.0/2.2).cpu(),
+}
+
+fig, axs = plt.subplots(1, len(show_dict), figsize=(5*len(show_dict), 5))
+for ax, (k, v) in zip(axs, show_dict.items()):
+    ax.imshow(bg_img)
+    ax.set_title(k)
+    ax.imshow(v)
+
 plt.show()
-# %%
-print(mask.shape)
 
 # %%
-from pathlib import Path
-import math
 
 def deringing(coeffs, window):
     deringed_coeffs = torch.zeros_like(coeffs)
@@ -129,28 +138,42 @@ coeffs = torch.tensor([[ 0.5,
                        requires_grad = True)
 res = (128, 128)
 
-materials = [pyredner.Material(
+materials = [
+    pyredner.Material(
         diffuse_reflectance = mano_layer.tex_diffuse_mean.to(pyredner.get_device()),
         specular_reflectance = mano_layer.tex_spec_mean.to(pyredner.get_device()),
-    )]
+    ),
+    objects[0].material,
+]
 
-shape_sphere = pyredner.Shape(\
+vertex_normals = calc_vertex_normals(mano.vertices[0], mano_layer.faces)
+
+mano_shape = pyredner.Shape(\
     vertices = mano.vertices[0], 
     indices = mano_layer.faces.to(torch.int32), 
     uvs = torch.tensor(uvs, dtype=torch.float32),
     uv_indices = torch.tensor(mano_layer.face_uvs, dtype=torch.int32),
-    # normals = normals,
+    normals = torch.tensor(vertex_normals, dtype=torch.float32),
+    normal_indices=mano_layer.faces.to(torch.int32),
     material_id = 0)
-shapes = [shape_sphere]
+
+obj_shape = pyredner.Shape(
+    vertices=apply_transform_to_mesh(objects[0].vertices, anno),
+    indices=objects[0].indices, 
+    uvs=objects[0].uvs,
+    uv_indices=objects[0].uv_indices,
+    material_id=1
+)
+shapes = [mano_shape, obj_shape]
 render = pyredner.RenderFunction.apply
 
 target = torch.pow(torch.tensor(bg_img, device=pyredner.get_device()), 2.2)
 # Finally we can start the Adam iteration
 optimizer = torch.optim.Adam([coeffs,], lr=3e-2)
 
-save_dir = "results/joint_material_envmap_sh_3"
+save_dir = "results/joint_material_envmap_sh_ho"
 # Path('results/joint_material_envmap_sh/').mkdir(parents=True, exist_ok=True)
-for t in range(400):
+for t in range(200):
     print('iteration:', t)
     optimizer.zero_grad()
     # Repeat the envmap generation & material for the gradients
@@ -177,16 +200,13 @@ for t in range(400):
                     max_bounces = 1, 
                     )
     img = render(t+1, *scene_args)
-    # print(img.shape, target.shape, mask.shape)
     loss = torch.pow(img*mask.unsqueeze(-1) - target*mask.unsqueeze(-1), 2).sum()
-    print('loss:', loss.item())
+    print('loss:', f"{loss.item():.04f}")
 
     loss.backward()
     optimizer.step()
 
     if t > 0 and t % (10 ** int(math.log10(t))) == 0:
-        # pyredner.imwrite(envmap.cpu(), f'{save_dir}/envmap_{t}.exr')
-        # pyredner.imwrite(envmap.cpu(), f'{save_dir}/envmap_{t}.png')
         pyredner.imwrite(img.cpu(), f'{save_dir}/iter_{t}.png')
     # Print the gradients of the coefficients, material parameters
     # print('coeffs.grad:', coeffs.grad)
@@ -202,15 +222,18 @@ materials = [
     objects[0].material,
     ]
 
+vertex_normals = calc_vertex_normals(mano.vertices[0], mano_layer.faces)
+
 mano_shape = pyredner.Shape(\
     vertices = mano.vertices[0], 
     indices = mano_layer.faces.to(torch.int32), 
     uvs = torch.tensor(uvs, dtype=torch.float32),
     uv_indices = torch.tensor(mano_layer.face_uvs, dtype=torch.int32),
-    # normals = normals,
+    # normal_indices=mano_layer.faces.to(torch.int32),
+    normals = torch.tensor(vertex_normals, dtype=torch.float32),
     material_id = 0)
 
-objects = pyredner.load_obj('data/models/021_bleach_cleanser/textured_simple.obj', return_objects=True)
+# objects = pyredner.load_obj('data/models/021_bleach_cleanser/textured_simple.obj', return_objects=True)
 obj_shape = pyredner.Shape(
     vertices=apply_transform_to_mesh(objects[0].vertices, anno),
     indices=objects[0].indices, 
@@ -233,12 +256,14 @@ pyredner.imwrite(img.cpu(), f'{save_dir}/final.png')
 # pyredner.imwrite(torch.abs(target - img).cpu(), f'{save_dir}/final_diff.png')
 
 # %
-img_alpha = torch.cat([img, mask.unsqueeze(-1)], -1)
+deferred_img = pyredner.render_deferred(scene, lights=[dirlight], alpha=True)
+mask_ho = deferred_img[..., -1]
+img_alpha = torch.cat([img, mask_ho.unsqueeze(-1)], -1)
 # pyredner.imwrite(img_alpha.cpu(), f'{save_dir}/final_alpha.png')
 
 fig, axs = plt.subplots(1,2, figsize=(10, 5))
 axs[0].imshow(bg_img)
-# axs[1].imshow(bg_img)
-axs[1].imshow(torch.pow(img.detach().cpu(), 1/2.2))
+axs[1].imshow(bg_img)
+axs[1].imshow(torch.pow(img_alpha.detach().cpu(), 1/2.2))
 plt.show()
 # %%
