@@ -6,6 +6,7 @@ import trimesh
 import pyredner
 import openmesh
 import imageio
+from pathlib import Path
 import os
 # from trimesh import load_mesh
 
@@ -47,6 +48,23 @@ class ManoLayer:
         
         self.tex_diffuse_mean = torch.pow(self.tex_diffuse_mean, 2.2)
         self.tex_spec_mean = torch.pow(self.tex_spec_mean, 2.2)
+
+        diffuse_basis_paths = sorted(Path(tex_path).glob('tex_diffuse_basis_*.png'))
+        spec_basis_paths = sorted(Path(tex_path).glob('tex_spec_basis_*.png'))
+
+        tex_diffuse_basis, tex_spec_basis = [], []
+        for fp in diffuse_basis_paths:
+            img = torch.tensor(imageio.imread(fp).astype(np.float32)[..., :3] / 255.0)
+            img = torch.pow(img, 2.2)
+            tex_diffuse_basis.append(img - self.tex_diffuse_mean)
+
+        for fp in spec_basis_paths:
+            img = torch.tensor(imageio.imread(fp).astype(np.float32)[..., :3] / 255.0)
+            img = torch.pow(img, 2.2)
+            tex_spec_basis.append(img - self.tex_spec_mean)
+        
+        self.tex_diffuse_basis = torch.stack(tex_diffuse_basis, -1)
+        self.tex_spec_basis = torch.stack(tex_spec_basis, -1)
 
     def __call__(self, anno, is_rhand=True):
         '''

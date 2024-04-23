@@ -92,12 +92,23 @@ scene = pyredner.Scene(
 render_albedo = pyredner.render_albedo(scene, alpha=True)
 # render_deferred = pyredner.render_deferred(scene, lights=[dirlight], alpha=True)
 # print(render_img.shape)
-
 mask = render_albedo[..., -1]
+
+scene_mano = pyredner.Scene(
+    camera = camera, 
+    objects = [
+        mano_object, 
+        ]
+    )
+# Render the scene.
+render_albedo_mano = pyredner.render_albedo(scene_mano, alpha=True)
+
+mask_mano = render_albedo_mano[..., -1]
 
 show_dict = {
     'input': bg_img,
     'albedo': torch.pow(render_albedo, 1.0/2.2).cpu(),
+    'albedo_mano': torch.pow(render_albedo_mano, 1.0/2.2).cpu(),
 }
 
 fig, axs = plt.subplots(1, len(show_dict), figsize=(5*len(show_dict), 5))
@@ -122,20 +133,23 @@ def deringing(coeffs, window):
     return deringed_coeffs
 
 # Reset the coefficients to some constant color, repeat the same process as in target envmap
-coeffs = torch.tensor([[ 0.5,
-                         0.0, 0.0, 0.0,
-                         0.0, 0.0, 0.0, 0.0, 0.0,
-                         0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], # coeffs for red
-                       [ 0.5,
-                         0.0, 0.0, 0.0,
-                         0.0, 0.0, 0.0, 0.0, 0.0,
-                         0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], # coeffs for green
-                       [ 0.5,
-                         0.0, 0.0, 0.0,
-                         0.0, 0.0, 0.0, 0.0, 0.0,
-                         0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]], # coeffs for blue
-                       device = pyredner.get_device(),
-                       requires_grad = True)
+# coeffs = torch.tensor([[ 0.5,
+#                          0.0, 0.0, 0.0,
+#                          0.0, 0.0, 0.0, 0.0, 0.0,
+#                          0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], # coeffs for red
+#                        [ 0.5,
+#                          0.0, 0.0, 0.0,
+#                          0.0, 0.0, 0.0, 0.0, 0.0,
+#                          0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], # coeffs for green
+#                        [ 0.5,
+#                          0.0, 0.0, 0.0,
+#                          0.0, 0.0, 0.0, 0.0, 0.0,
+#                          0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]], # coeffs for blue
+#                        device = pyredner.get_device(),
+#                        requires_grad = True)
+coeffs_sh = torch.zeros((3, 16), device=pyredner.get_device())
+coeffs_sh[:, 0] += 0.5
+coeffs_sh.requires_grad = True
 res = (128, 128)
 
 materials = [
@@ -168,17 +182,24 @@ shapes = [mano_shape, obj_shape]
 render = pyredner.RenderFunction.apply
 
 target = torch.pow(torch.tensor(bg_img, device=pyredner.get_device()), 2.2)
-# Finally we can start the Adam iteration
-optimizer = torch.optim.Adam([coeffs,], lr=3e-2)
 
-save_dir = "results/joint_material_envmap_sh_ho"
+coeffs_tex = torch.zeros(10, device=pyredner.get_device(), requires_grad=True)
+
+# Finally we can start the Adam iteration
+optimizer = torch.optim.Adam([
+    # coeffs_sh, 
+    coeffs_tex
+    ], lr=3e-2)
+
+save_dir = "results/joint_material_envmap_onlytex"
 # Path('results/joint_material_envmap_sh/').mkdir(parents=True, exist_ok=True)
+loss_log = []
 for t in range(200):
     print('iteration:', t)
     optimizer.zero_grad()
     # Repeat the envmap generation & material for the gradients
-    deringed_coeffs = deringing(coeffs, 6.0)
-    envmap = pyredner.SH_reconstruct(deringed_coeffs, res)
+    deringed_coeffs_sh = deringing(coeffs_sh, 6.0)
+    envmap = pyredner.SH_reconstruct(deringed_coeffs_sh, res)
     if t > 0 and t % (10 ** int(math.log10(t))) == 0:
         pyredner.imwrite(envmap.cpu(), f'{save_dir}/envmap_{t}.exr')
         pyredner.imwrite(envmap.cpu(), f'{save_dir}/envmap_{t}.png')
@@ -186,10 +207,13 @@ for t in range(200):
     # diffuse_reflectance = diffuse_reflectance_param.abs()
     # specular_reflectance = specular_reflectance_param.abs()
     # roughness = roughness_param.abs() # avoid going below zero
-    # materials[0] = pyredner.Material(\
-    #     diffuse_reflectance = diffuse_reflectance,
-    #     specular_reflectance = specular_reflectance,
-    #     roughness = roughness)
+    diffuse_reflectance = torch.sum(coeffs_tex * mano_layer.tex_diffuse_basis.to(pyredner.get_device()), dim=-1) + mano_layer.tex_diffuse_mean.to(pyredner.get_device())
+    specular_reflectance = torch.sum(coeffs_tex * mano_layer.tex_spec_basis.to(pyredner.get_device()), dim=-1) + mano_layer.tex_spec_mean.to(pyredner.get_device())
+    materials[0] = pyredner.Material(
+        diffuse_reflectance = diffuse_reflectance,
+        specular_reflectance = specular_reflectance,
+        # roughness = roughness,
+    )
     scene = pyredner.Scene(camera = camera,
                            shapes = shapes,
                            materials = materials,
@@ -200,70 +224,106 @@ for t in range(200):
                     max_bounces = 1, 
                     )
     img = render(t+1, *scene_args)
-    loss = torch.pow(img*mask.unsqueeze(-1) - target*mask.unsqueeze(-1), 2).sum()
-    print('loss:', f"{loss.item():.04f}")
+    loss_mse = torch.pow(img * mask_mano.unsqueeze(-1) - target * mask_mano.unsqueeze(-1), 2).sum()
+    reg_tex = torch.pow(coeffs_tex, 2).sum()
+    loss = loss_mse + reg_tex
+    print(f"loss_total: {loss.item():.04f}, loss_mse: {loss_mse.item():.04f}, reg_tex: {reg_tex.item():.04f}")
 
     loss.backward()
     optimizer.step()
 
+    loss_log.append(loss.item())
+
     if t > 0 and t % (10 ** int(math.log10(t))) == 0:
         pyredner.imwrite(img.cpu(), f'{save_dir}/iter_{t}.png')
     # Print the gradients of the coefficients, material parameters
-    # print('coeffs.grad:', coeffs.grad)
+    # print('coeffs_sh.grad:', coeffs_sh.grad)
     # Print the current parameters
-    # print('coeffs:', coeffs)
+    # print('coeffs_sh:', coeffs_sh)
+
+plt.plot(range(len(loss_log)), loss_log)
+plt.show()
 
 # %%
-materials = [
-    pyredner.Material(
-        diffuse_reflectance = mano_layer.tex_diffuse_mean.to(pyredner.get_device()),
-        specular_reflectance = mano_layer.tex_spec_mean.to(pyredner.get_device()),
-    ),
-    objects[0].material,
-    ]
+with torch.no_grad():
+    print('coeffs_sh:', coeffs_sh)
+    print('coeffs_tex:', coeffs_tex)
+    diffuse_reflectance = torch.sum(coeffs_tex * mano_layer.tex_diffuse_basis.to(pyredner.get_device()), dim=-1) + mano_layer.tex_diffuse_mean.to(pyredner.get_device())
+    specular_reflectance = torch.sum(coeffs_tex * mano_layer.tex_spec_basis.to(pyredner.get_device()), dim=-1) + mano_layer.tex_spec_mean.to(pyredner.get_device())    
+    materials = [
+        pyredner.Material(
+            diffuse_reflectance = diffuse_reflectance,
+            specular_reflectance = specular_reflectance,
+            # diffuse_reflectance = mano_layer.tex_diffuse_mean.to(pyredner.get_device()),
+            # specular_reflectance = mano_layer.tex_spec_mean.to(pyredner.get_device()),
+        ),
+        objects[0].material,
+        ]
 
-vertex_normals = calc_vertex_normals(mano.vertices[0], mano_layer.faces)
+    vertex_normals = calc_vertex_normals(mano.vertices[0], mano_layer.faces)
 
-mano_shape = pyredner.Shape(\
-    vertices = mano.vertices[0], 
-    indices = mano_layer.faces.to(torch.int32), 
-    uvs = torch.tensor(uvs, dtype=torch.float32),
-    uv_indices = torch.tensor(mano_layer.face_uvs, dtype=torch.int32),
-    # normal_indices=mano_layer.faces.to(torch.int32),
-    normals = torch.tensor(vertex_normals, dtype=torch.float32),
-    material_id = 0)
+    mano_shape = pyredner.Shape(\
+        vertices = mano.vertices[0], 
+        indices = mano_layer.faces.to(torch.int32), 
+        uvs = torch.tensor(uvs, dtype=torch.float32),
+        uv_indices = torch.tensor(mano_layer.face_uvs, dtype=torch.int32),
+        normals = torch.tensor(vertex_normals, dtype=torch.float32),
+        material_id = 0)
 
-# objects = pyredner.load_obj('data/models/021_bleach_cleanser/textured_simple.obj', return_objects=True)
-obj_shape = pyredner.Shape(
-    vertices=apply_transform_to_mesh(objects[0].vertices, anno),
-    indices=objects[0].indices, 
-    uvs=objects[0].uvs,
-    uv_indices=objects[0].uv_indices,
-    material_id=1
-)
-shapes = [mano_shape, obj_shape] 
-scene = pyredner.Scene(camera = camera,
-                        shapes = shapes,
-                        materials = materials,
-                        envmap = envmap)
-scene_args = pyredner.RenderFunction.serialize_scene(\
-    scene = scene,
-    num_samples = 512,
-    max_bounces = 1)
-img = render(202, *scene_args)
-pyredner.imwrite(img.cpu(), f'{save_dir}/final.exr')
-pyredner.imwrite(img.cpu(), f'{save_dir}/final.png')
-# pyredner.imwrite(torch.abs(target - img).cpu(), f'{save_dir}/final_diff.png')
+    obj_shape = pyredner.Shape(
+        vertices=apply_transform_to_mesh(objects[0].vertices, anno),
+        indices=objects[0].indices, 
+        uvs=objects[0].uvs,
+        uv_indices=objects[0].uv_indices,
+        material_id=1
+    )
+    shapes = [mano_shape, obj_shape] 
+    scene = pyredner.Scene(camera = camera,
+                            shapes = shapes,
+                            materials = materials,
+                            envmap = envmap)
+    scene_args = pyredner.RenderFunction.serialize_scene(
+        scene = scene,
+        num_samples = 512,
+        max_bounces = 1)
+    img = render(202, *scene_args)
+    pyredner.imwrite(img.cpu(), f'{save_dir}/final.exr')
+    pyredner.imwrite(img.cpu(), f'{save_dir}/final.png')
+    # pyredner.imwrite(torch.abs(target - img).cpu(), f'{save_dir}/final_diff.png')
 
-# %
-deferred_img = pyredner.render_deferred(scene, lights=[dirlight], alpha=True)
-mask_ho = deferred_img[..., -1]
-img_alpha = torch.cat([img, mask_ho.unsqueeze(-1)], -1)
-# pyredner.imwrite(img_alpha.cpu(), f'{save_dir}/final_alpha.png')
+    # %
+    # deferred_img = pyredner.render_deferred(scene, lights=[dirlight], alpha=True)
+    # mask_ho = deferred_img[..., -1]
+    img_alpha = torch.cat([img, mask.unsqueeze(-1)], -1)
+    # pyredner.imwrite(img_alpha.cpu(), f'{save_dir}/final_alpha.png')
 
-fig, axs = plt.subplots(1,2, figsize=(10, 5))
-axs[0].imshow(bg_img)
-axs[1].imshow(bg_img)
-axs[1].imshow(torch.pow(img_alpha.detach().cpu(), 1/2.2))
-plt.show()
+    render_albedo_ = pyredner.render_albedo(scene, alpha=True)
+
+    show_dict = {
+        'input': bg_img,
+        # 'albedo': torch.pow(render_albedo, 1.0/2.2).cpu(),
+        'optimized': torch.pow(img_alpha.detach().cpu(), 1/2.2),
+        'albedo': torch.pow(render_albedo_.detach().cpu(), 1.0/2.2),
+    }
+
+    fig, axs = plt.subplots(1, len(show_dict), figsize=(5*len(show_dict), 5))
+    for ax, (k, v) in zip(axs, show_dict.items()):
+        ax.imshow(bg_img)
+        ax.set_title(k)
+        ax.imshow(v)
+        ax.axis('off')
+    plt.show()
+
+    show_dict = dict(
+        mean = torch.pow(mano_layer.tex_diffuse_mean.cpu(), 1/2.2),
+        optimized = torch.pow(diffuse_reflectance.cpu(), 1/2.2),
+    )
+
+    fig, axs = plt.subplots(1, len(show_dict), figsize=(5*len(show_dict), 5))
+    for ax, (k, v) in zip(axs, show_dict.items()):
+        ax.imshow(v)
+        ax.set_title(k)
+        ax.axis('off')
+    plt.show()
+
 # %%
