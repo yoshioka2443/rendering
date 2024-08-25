@@ -3,3 +3,6 @@ data/*
 */.pytest
 *.pyc
 output/*
+
+*.gz
+*-ubyte
