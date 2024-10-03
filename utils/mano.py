@@ -45,14 +45,17 @@ class ManoLayer:
     def load_textures(self, tex_path="data/NIMBLE/tex_mano"):
         self.tex_diffuse_mean = torch.tensor(imageio.imread(os.path.join(tex_path, 'tex_diffuse_mean.png')).astype(np.float32)[..., :3] / 255.0)
         self.tex_spec_mean = torch.tensor(imageio.imread(os.path.join(tex_path, 'tex_spec_mean.png')).astype(np.float32)[..., :3] / 255.0)
+        self.tex_normal_mean = torch.tensor(imageio.imread(os.path.join(tex_path, 'tex_normal_mean.png')).astype(np.float32)[..., :3] / 255.0)
         
         self.tex_diffuse_mean = torch.pow(self.tex_diffuse_mean, 2.2)
         self.tex_spec_mean = torch.pow(self.tex_spec_mean, 2.2)
+        self.tex_normal_mean = self.tex_normal_mean * 2.0 - 1.0
 
         diffuse_basis_paths = sorted(Path(tex_path).glob('tex_diffuse_basis_*.png'))
         spec_basis_paths = sorted(Path(tex_path).glob('tex_spec_basis_*.png'))
+        normal_basis_paths = sorted(Path(tex_path).glob('tex_normal_basis_*.png'))
 
-        tex_diffuse_basis, tex_spec_basis = [], []
+        tex_diffuse_basis, tex_spec_basis, tex_normal_basis = [], [], []
         for fp in diffuse_basis_paths:
             img = torch.tensor(imageio.imread(fp).astype(np.float32)[..., :3] / 255.0)
             img = torch.pow(img, 2.2)
@@ -63,8 +66,14 @@ class ManoLayer:
             img = torch.pow(img, 2.2)
             tex_spec_basis.append(img - self.tex_spec_mean)
         
+        for fp in normal_basis_paths:
+            img = torch.tensor(imageio.imread(fp).astype(np.float32)[..., :3] / 255.0)
+            img = img * 2.0 - 1.0
+            tex_normal_basis.append(img - self.tex_normal_mean)
+        
         self.tex_diffuse_basis = torch.stack(tex_diffuse_basis, -1)
         self.tex_spec_basis = torch.stack(tex_spec_basis, -1)
+        self.tex_normal_basis = torch.stack(tex_normal_basis, -1)
 
     def __call__(self, anno, is_rhand=True):
         '''

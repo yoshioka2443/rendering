@@ -12,6 +12,8 @@ from utils.utils import load_ho_meta, apply_transform_to_mesh, calc_vertex_norma
 from utils.mano import ManoLayer
 from pathlib import Path
 import math
+from jupyterplot import ProgressPlot
+
 
 # %%
 bg_img = np.array(Image.open('data/HO3D_v3/train/ABF10/rgb/0000.jpg'), dtype=np.float32)/255.0
@@ -24,7 +26,7 @@ resolution = bg_img.shape[:2]
 
 uvs = torch.stack([mano_layer.uv[..., 0], 1-mano_layer.uv[..., 1]], -1)
 
-mano_object = pyredner.Object(
+mano_redner = pyredner.Object(
     vertices = mano.vertices[0], 
     indices = mano_layer.faces.to(torch.int32), 
     uvs = torch.tensor(uvs, dtype=torch.float32),
@@ -32,6 +34,7 @@ mano_object = pyredner.Object(
     material=pyredner.Material(
         diffuse_reflectance = mano_layer.tex_diffuse_mean.to(pyredner.get_device()),
         specular_reflectance = mano_layer.tex_spec_mean.to(pyredner.get_device()),
+        normal_map = mano_layer.tex_normal_mean.to(pyredner.get_device()),
     )
 )
 
@@ -60,7 +63,7 @@ camera = pyredner.Camera(
     resolution=resolution,
 )
 
-dirlight = pyredner.AmbientLight(intensity=torch.tensor([1., 1., 1.]))
+# dirlight = pyredner.AmbientLight(intensity=torch.tensor([1., 1., 1.]))
 
 # envmap = pyredner.EnvironmentMap(torch.tensor(bg_img))
 
@@ -68,23 +71,27 @@ dirlight = pyredner.AmbientLight(intensity=torch.tensor([1., 1., 1.]))
 objects = pyredner.load_obj('data/models/021_bleach_cleanser/textured_simple.obj', return_objects=True)
 
 # sRGB to Linear RGB
-object_diffuse_texels = objects[0].material.diffuse_reflectance._texels
-objects[0].material.diffuse_reflectance._texels = torch.pow(object_diffuse_texels, 2.2)
+# object_diffuse_texels = objects[0].material.diffuse_reflectance._texels
+# objects[0].material.diffuse_reflectance._texels = torch.pow(object_diffuse_texels, 2.2)
 
-obj_object = pyredner.Object(
+obj_redner = pyredner.Object(
     vertices=apply_transform_to_mesh(objects[0].vertices, anno),
     indices=objects[0].indices, 
     uvs=objects[0].uvs,
     uv_indices=objects[0].uv_indices,
-    material=objects[0].material
+    material=pyredner.Material(
+        diffuse_reflectance = torch.pow(objects[0].material.diffuse_reflectance._texels.to(pyredner.get_device()), 2.2),
+        specular_reflectance = objects[0].material._specular_reflectance._texels.to(pyredner.get_device()),
+        roughness = objects[0].material.roughness._texels.to(pyredner.get_device()),
+    )
 )
 
 # create scene
 scene = pyredner.Scene(
     camera = camera, 
     objects = [
-        mano_object, 
-        obj_object,
+        mano_redner, 
+        obj_redner,
         ]
     )
 
@@ -97,7 +104,7 @@ mask = render_albedo[..., -1]
 scene_mano = pyredner.Scene(
     camera = camera, 
     objects = [
-        mano_object, 
+        mano_redner, 
         ]
     )
 # Render the scene.
@@ -107,13 +114,13 @@ mask_mano = render_albedo_mano[..., -1]
 
 show_dict = {
     'input': bg_img,
-    'albedo': torch.pow(render_albedo, 1.0/2.2).cpu(),
-    'albedo_mano': torch.pow(render_albedo_mano, 1.0/2.2).cpu(),
+    'albedo(mano+obj)': torch.pow(render_albedo, 1.0/2.2).cpu(),
+    'albedo(mano)': torch.pow(render_albedo_mano, 1.0/2.2).cpu(),
 }
 
 fig, axs = plt.subplots(1, len(show_dict), figsize=(5*len(show_dict), 5))
 for ax, (k, v) in zip(axs, show_dict.items()):
-    ax.imshow(bg_img)
+    # ax.imshow(bg_img)
     ax.set_title(k)
     ax.imshow(v)
 
@@ -156,6 +163,7 @@ materials = [
     pyredner.Material(
         diffuse_reflectance = mano_layer.tex_diffuse_mean.to(pyredner.get_device()),
         specular_reflectance = mano_layer.tex_spec_mean.to(pyredner.get_device()),
+        normal_map = mano_layer.tex_normal_mean.to(pyredner.get_device()),
     ),
     objects[0].material,
 ]
@@ -187,15 +195,23 @@ coeffs_tex = torch.zeros(10, device=pyredner.get_device(), requires_grad=True)
 
 # Finally we can start the Adam iteration
 optimizer = torch.optim.Adam([
-    # coeffs_sh, 
+    coeffs_sh, 
     coeffs_tex
     ], lr=3e-2)
 
 save_dir = "results/joint_material_envmap_onlytex"
 # Path('results/joint_material_envmap_sh/').mkdir(parents=True, exist_ok=True)
 loss_log = []
-for t in range(200):
-    print('iteration:', t)
+
+
+lambda_reg_tex = 1e2
+
+pyredner.set_print_timing(False)
+# pp = ProgressPlot()
+pp = ProgressPlot(line_names=['loss', 'loss_mse', 'reg_tex'], plot_names=['loss'])
+# pp_coeffs = ProgressPlot(line_names=[f'coeff{i}' for i in range(coeffs_tex.shape[0])])
+for t in range(100):
+    # print('iteration:', t)
     optimizer.zero_grad()
     # Repeat the envmap generation & material for the gradients
     deringed_coeffs_sh = deringing(coeffs_sh, 6.0)
@@ -204,15 +220,13 @@ for t in range(200):
         pyredner.imwrite(envmap.cpu(), f'{save_dir}/envmap_{t}.exr')
         pyredner.imwrite(envmap.cpu(), f'{save_dir}/envmap_{t}.png')
     envmap = pyredner.EnvironmentMap(envmap)
-    # diffuse_reflectance = diffuse_reflectance_param.abs()
-    # specular_reflectance = specular_reflectance_param.abs()
-    # roughness = roughness_param.abs() # avoid going below zero
     diffuse_reflectance = torch.sum(coeffs_tex * mano_layer.tex_diffuse_basis.to(pyredner.get_device()), dim=-1) + mano_layer.tex_diffuse_mean.to(pyredner.get_device())
     specular_reflectance = torch.sum(coeffs_tex * mano_layer.tex_spec_basis.to(pyredner.get_device()), dim=-1) + mano_layer.tex_spec_mean.to(pyredner.get_device())
+    normal_map = torch.sum(coeffs_tex * mano_layer.tex_normal_basis.to(pyredner.get_device()), dim=-1) + mano_layer.tex_normal_mean.to(pyredner.get_device())
     materials[0] = pyredner.Material(
         diffuse_reflectance = diffuse_reflectance,
         specular_reflectance = specular_reflectance,
-        # roughness = roughness,
+        normal_map = normal_map,
     )
     scene = pyredner.Scene(camera = camera,
                            shapes = shapes,
@@ -224,15 +238,31 @@ for t in range(200):
                     max_bounces = 1, 
                     )
     img = render(t+1, *scene_args)
-    loss_mse = torch.pow(img * mask_mano.unsqueeze(-1) - target * mask_mano.unsqueeze(-1), 2).sum()
-    reg_tex = torch.pow(coeffs_tex, 2).sum()
+    # loss_mse = torch.pow((img - target) * mask_mano.unsqueeze(-1), 2).sum()
+    loss_mse = torch.pow((img - target) * mask.unsqueeze(-1), 2).sum()
+    reg_tex = torch.pow(coeffs_tex, 2).sum() * lambda_reg_tex
     loss = loss_mse + reg_tex
-    print(f"loss_total: {loss.item():.04f}, loss_mse: {loss_mse.item():.04f}, reg_tex: {reg_tex.item():.04f}")
+    # print(f"loss_total: {loss.item():.04f}, loss_mse: {loss_mse.item():.04f}, reg_tex: {reg_tex.item():.04f}")
 
     loss.backward()
     optimizer.step()
 
     loss_log.append(loss.item())
+    
+    pp.update({
+        'loss': {
+            'loss': loss.item(),
+            'loss_mse': loss_mse.item(),
+            'reg_tex': reg_tex.item(),
+        },
+        # 'coeffs': {
+        #         '0': coeffs_tex[0].item(),
+        #     }
+        # 'coeffs': dict(zip([f'coeff{i}' for i in range(len(coeffs_tex))], coeffs_tex.detach().cpu().numpy().tolist()))
+    })
+    # pp.update([[loss.item(), loss_mse.item(), reg_tex.item()]])
+    
+    # pp_coeffs.update([coeffs_tex.detach().cpu().numpy().tolist()])
 
     if t > 0 and t % (10 ** int(math.log10(t))) == 0:
         pyredner.imwrite(img.cpu(), f'{save_dir}/iter_{t}.png')
@@ -241,8 +271,9 @@ for t in range(200):
     # Print the current parameters
     # print('coeffs_sh:', coeffs_sh)
 
-plt.plot(range(len(loss_log)), loss_log)
-plt.show()
+pp.finalize()
+# pp.coeffs.finalize()
+
 
 # %%
 with torch.no_grad():
@@ -250,10 +281,12 @@ with torch.no_grad():
     print('coeffs_tex:', coeffs_tex)
     diffuse_reflectance = torch.sum(coeffs_tex * mano_layer.tex_diffuse_basis.to(pyredner.get_device()), dim=-1) + mano_layer.tex_diffuse_mean.to(pyredner.get_device())
     specular_reflectance = torch.sum(coeffs_tex * mano_layer.tex_spec_basis.to(pyredner.get_device()), dim=-1) + mano_layer.tex_spec_mean.to(pyredner.get_device())    
+    normal_map = torch.sum(coeffs_tex * mano_layer.tex_normal_basis.to(pyredner.get_device()), dim=-1) + mano_layer.tex_normal_mean.to(pyredner.get_device())    
     materials = [
         pyredner.Material(
             diffuse_reflectance = diffuse_reflectance,
             specular_reflectance = specular_reflectance,
+            normal_map = normal_map
             # diffuse_reflectance = mano_layer.tex_diffuse_mean.to(pyredner.get_device()),
             # specular_reflectance = mano_layer.tex_spec_mean.to(pyredner.get_device()),
         ),
@@ -262,9 +295,13 @@ with torch.no_grad():
 
     vertex_normals = calc_vertex_normals(mano.vertices[0], mano_layer.faces)
 
+    mano_vertices = mano.vertices[0]
+    mano_indices = mano_layer.faces.to(torch.int32)
+    # pyredner.smooth(vertices, indices, lmd=0.5)
+
     mano_shape = pyredner.Shape(\
-        vertices = mano.vertices[0], 
-        indices = mano_layer.faces.to(torch.int32), 
+        vertices = mano_vertices, 
+        indices = mano_indices, 
         uvs = torch.tensor(uvs, dtype=torch.float32),
         uv_indices = torch.tensor(mano_layer.face_uvs, dtype=torch.int32),
         normals = torch.tensor(vertex_normals, dtype=torch.float32),
@@ -302,8 +339,8 @@ with torch.no_grad():
     show_dict = {
         'input': bg_img,
         # 'albedo': torch.pow(render_albedo, 1.0/2.2).cpu(),
-        'optimized': torch.pow(img_alpha.detach().cpu(), 1/2.2),
-        'albedo': torch.pow(render_albedo_.detach().cpu(), 1.0/2.2),
+        'optimized': torch.pow(img_alpha.detach().cpu(), 1.0/2.2),
+        # 'albedo': torch.pow(render_albedo_.detach().cpu(), 1.0/2.2),
     }
 
     fig, axs = plt.subplots(1, len(show_dict), figsize=(5*len(show_dict), 5))
