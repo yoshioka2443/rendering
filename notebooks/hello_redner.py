@@ -12,10 +12,14 @@ from utils.utils import load_ho_meta, apply_transform_to_mesh
 from utils.mano import ManoLayer
 
 
-bg_img = np.array(Image.open('data/HO3D_v3/train/ABF10/rgb/0000.jpg'), dtype=np.float32)/255.0
-anno = load_ho_meta('data/HO3D_v3/train/ABF10/meta/0000.pkl')
+name = 'GPMF12'
+frame = 250
+# name = 'MDF11'
+# frame = '1016'
+bg_img = np.array(Image.open(f'data/HO3D_v3/train/{name}/rgb/{frame:04d}.jpg'), dtype=np.float32)/255.0
+anno = load_ho_meta(f'data/HO3D_v3/train/{name}/meta/{frame:04d}.pkl')
 mano_layer = ManoLayer()
-mano_layer.load_textures()
+mano_layer.load_textures(tex_path='data/NIMBLE/tex_mano')
 mano = mano_layer(anno)
 
 resolution = bg_img.shape[:2]
@@ -70,10 +74,12 @@ intrinsic_mat = torch.tensor([
 
 fov = 2* torch.atan(0.5 * resolution[1] / K[0, 0]) * 180 / 3.1415926
 print(fov)
+
+# %%
 camera = pyredner.Camera(
     intrinsic_mat=intrinsic_mat,
     # cam_to_world=cam2world,
-    position = torch.tensor([0, 0, 0.], dtype=torch.float32),
+    position = torch.tensor([0, 0, 0], dtype=torch.float32),
     look_at = torch.tensor([0, 0, -1.], dtype=torch.float32),
     up = torch.tensor([0, 1., 0], dtype=torch.float32),
     # fov = torch.tensor([fov], dtype=torch.float32),
@@ -107,7 +113,7 @@ scene = pyredner.Scene(
     camera = camera, 
     objects = [
         mano_redner, 
-        obj_redner,
+        # obj_redner,
         ]
     )
 
