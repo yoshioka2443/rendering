@@ -90,7 +90,7 @@ print(camera.__dict__)
 #     direction = torch.tensor([0.0, 0.0, -1.0]), 
 #     intensity = torch.ones(3)*3.0,
 # )
-light = pyredner.AmbientLight(intensity=torch.tensor([1., 1., 1.]))
+light = pyredner.AmbientLight(intensity=torch.tensor([1., 1., 1.])* 0.1) 
 # envmap = pyredner.EnvironmentMap(torch.tensor(bg_img))
 
 objects = pyredner.load_obj('data/models/021_bleach_cleanser/textured_simple.obj', return_objects=True)
@@ -114,11 +114,13 @@ scene = pyredner.Scene(
     objects = [
         mano_redner, 
         # obj_redner,
-        ]
+        ],
+    envmap = pyredner.EnvironmentMap(torch.tensor(bg_img)*255),
     )
 
 # Render the scene.
 render = pyredner.render_deferred(scene, lights=[light], alpha=True)    
+# render = pyredner.render_deferred(scene, alpha=True)    
 
 fig, axs = plt.subplots(1, 2, figsize=(10, 5))
 for ax in axs:
