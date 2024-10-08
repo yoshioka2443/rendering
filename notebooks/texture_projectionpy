@@ -14,199 +14,266 @@ from pathlib import Path
 import math
 from jupyterplot import ProgressPlot
 
-# name = 'GPMF12'
-# frame = 250
-name = 'ABF10'
-frame = 0
-bg_img = np.array(
-    Image.open(f'data/HO3D_v3/train/{name}/rgb/{frame:04d}.jpg'), 
-    dtype=np.float32) / 255.0
-anno = load_ho_meta(f'data/HO3D_v3/train/{name}/meta/{frame:04d}.pkl')
-mano_layer = ManoLayer()
-mano_layer.load_textures()
-mano = mano_layer(anno)
+class Runner():
+    def __init__(self):
+        self.mano_layer = ManoLayer()
+        self.mano_layer.load_textures()
+        
+        
+    def load(self,
+            name = 'ABF10',
+            frame = 0,
+            ):
+        self.bg_img = np.array(
+            Image.open(f'data/HO3D_v3/train/{name}/rgb/{frame:04d}.jpg'), 
+            dtype=np.float32) / 255.0
+        anno = load_ho_meta(f'data/HO3D_v3/train/{name}/meta/{frame:04d}.pkl')
+        self.mano = self.mano_layer(anno)
 
-resolution = bg_img.shape[:2]
-uvs = torch.stack([mano_layer.uv[..., 0], 1 - mano_layer.uv[..., 1]], -1)
+        resolution = self.bg_img.shape[:2]
+        self.resolution = resolution
 
-print(uvs.max(), uvs.min())
+        world2cam = torch.eye(4)
+        R = torch.diag(torch.tensor([-1.,1.,-1.]))
+        world2cam[:3,:3] = R
+        cam2world = world2cam.inverse()
+        self.K = torch.tensor(anno['camMat'], dtype=torch.float32)
+        fx, fy = self.K.diagonal()[:2]
+        px, py = self.K[:2,2]
+        intrinsic_mat = torch.tensor([
+                [fx / resolution[1] * 2, 0.0000, px/resolution[1]-0.5],
+                [0.0000, fy / resolution[1] * 2, py/resolution[0]-0.5],
+                [0.0000, 0.0000, 1.0000]]
+                )
 
+        self.camera = pyredner.Camera(
+            intrinsic_mat=intrinsic_mat,
+            position = torch.tensor([0, 0, 0.], dtype=torch.float32),
+            look_at = torch.tensor([0, 0, -1.], dtype=torch.float32),
+            up = torch.tensor([0, 1., 0], dtype=torch.float32),
+            resolution=resolution,
+        )
+        
+        
+    def render_with_texture(self, diffuse_reflectance):
+        ''' render mano with nimble mean texture '''
+        # diffuse_reflectance = self.mano_layer.tex_diffuse_mean.to(pyredner.get_device()),
+        # specular_reflectance = self.mano_layer.tex_spec_mean.to(pyredner.get_device()),
+                
+        uvs = torch.stack([self.mano_layer.uv[..., 0], 1 - self.mano_layer.uv[..., 1]], -1)
+        mano_redner = pyredner.Object(
+            vertices = self.mano.vertices[0], 
+            indices = self.mano_layer.faces.to(torch.int32), 
+            uvs = torch.tensor(uvs, dtype=torch.float32),
+            uv_indices = torch.tensor(self.mano_layer.face_uvs, dtype=torch.int32),
+            normals = pyredner.compute_vertex_normal(self.mano.vertices[0], self.mano_layer.faces),
+            material=pyredner.Material(
+                diffuse_reflectance = diffuse_reflectance,
+                # specular_reflectance = specular_reflectance,
+                # normal_map = mano_layer.tex_normal_mean.to(pyredner.get_device()),
+            )
+        )
+        scene = pyredner.Scene(camera = self.camera, objects = [mano_redner])
+        return pyredner.render_albedo(scene)
+        
+        
+    def project_texture_toUV(self, texture=None):
+        if texture is None:
+            texture = self.bg_img
+            
+        ''' ho3d camera matrix '''
+        world2cam = torch.eye(4)
+        ''' convert opencv to opengl '''
+        cv2gl = torch.diag(torch.tensor([1., -1., -1., 1]))
+        world2cam = world2cam @ cv2gl
 
-mano_redner = pyredner.Object(
-    vertices = mano.vertices[0], 
-    indices = mano_layer.faces.to(torch.int32), 
-    uvs = torch.tensor(uvs, dtype=torch.float32),
-    uv_indices = torch.tensor(mano_layer.face_uvs, dtype=torch.int32),
-    normals = pyredner.compute_vertex_normal(mano.vertices[0], mano_layer.faces),
-    material=pyredner.Material(
-        diffuse_reflectance = mano_layer.tex_diffuse_mean.to(pyredner.get_device()),
-        specular_reflectance = mano_layer.tex_spec_mean.to(pyredner.get_device()),
-        # normal_map = mano_layer.tex_normal_mean.to(pyredner.get_device()),
-    )
-)
+        vertices_cam = self.mano.vertices[0] @ world2cam[:3,:3].T + world2cam[:3,3].T
+        vertices_ndc = vertices_cam @ self.K.T
+        vertices_screen = vertices_ndc[..., :-1] / vertices_ndc[..., -1:]
 
-world2cam = torch.eye(4)
-R = torch.diag(torch.tensor([-1.,1.,-1.]))
-world2cam[:3,:3] = R
-cam2world = world2cam.inverse()
-K = torch.tensor(anno['camMat'], dtype=torch.float32)
-fx, fy = K.diagonal()[:2]
-px, py = K[:2,2]
-intrinsic_mat = torch.tensor([
-        [fx / resolution[1] * 2, 0.0000, px/resolution[1]-0.5],
-        [0.0000, fy / resolution[1] * 2, py/resolution[0]-0.5],
-        [0.0000, 0.0000, 1.0000]]
+        vertices_uv = vertices_screen / torch.tensor([self.resolution[1], self.resolution[0]], dtype=torch.float32)
+        
+        ''' 2d uv to 3d uv '''
+        uvs3d = torch.stack([
+            self.mano_layer.uv[..., 0], 
+            self.mano_layer.uv[..., 1],
+            torch.zeros_like(self.mano_layer.uv[..., 0])], -1) * 2 - 1
+
+        ''' UV座標を頂点に、頂点をUV座標に '''
+        mano_uv_redner = pyredner.Object(
+            vertices = uvs3d,
+            indices = torch.tensor(self.mano_layer.face_uvs, dtype=torch.int32),
+            uvs = vertices_uv, 
+            uv_indices = self.mano_layer.faces.to(torch.int32), 
+            material=pyredner.Material(
+                diffuse_reflectance = torch.tensor(texture).to(pyredner.get_device()),
+            )
         )
 
-camera = pyredner.Camera(
-    intrinsic_mat=intrinsic_mat,
-    position = torch.tensor([0, 0, 0.], dtype=torch.float32),
-    look_at = torch.tensor([0, 0, -1.], dtype=torch.float32),
-    up = torch.tensor([0, 1., 0], dtype=torch.float32),
-    resolution=resolution,
-)
+        ''' Orthographic cameraを使用してレンダリング '''
+        camera_uv = pyredner.Camera(
+            camera_type = pyredner.camera_type.orthographic,
+            position = torch.tensor([0, 0, 1.], dtype=torch.float32),
+            look_at = torch.tensor([0, 0, 0.], dtype=torch.float32),
+            up = torch.tensor([0, 1., 0], dtype=torch.float32),
+            resolution=self.mano_layer.tex_diffuse_mean.shape[:2],
+        )
+            
+        return pyredner.render_albedo(
+            pyredner.Scene(camera = camera_uv, objects = [mano_uv_redner]))
+        
 
-scene = pyredner.Scene(camera = camera, objects = [mano_redner])
-img = pyredner.render_albedo(scene)
+    def compute_front_mask(self):
+        ''' ho3d camera matrix '''
+        world2cam = torch.eye(4)
+        ''' convert opencv to opengl '''
+        cv2gl = torch.diag(torch.tensor([1., -1., -1., 1]))
+        world2cam = world2cam @ cv2gl
+        
+        vertices_cam = self.mano.vertices[0] @ world2cam[:3,:3].T + world2cam[:3,3].T
+        vertices_ndc = vertices_cam @ self.K.T
+        vertices_screen = vertices_ndc[..., :-1] / vertices_ndc[..., -1:]
+        vertices_uv = vertices_screen / torch.tensor([self.resolution[1], self.resolution[0]], dtype=torch.float32)
 
-plt.imshow(img.cpu().numpy())
-plt.show()
+        ''' 手前向きの頂点のマスクを取得 '''
+        vertices_normal_world = pyredner.compute_vertex_normal(self.mano.vertices[0], self.mano_layer.faces)
+        vertices_normal_camera = vertices_normal_world @ torch.tensor(world2cam)[:3,:3].T
+        vertices_front = vertices_normal_camera @ torch.tensor([0, 0, -1.], dtype=torch.float32)
+        vertices_front = vertices_front.unsqueeze(-1).expand(-1, 3)
 
-''' ho3d camera matrix '''
-world2cam = torch.eye(4)
-''' convert opencv to opengl '''
-cv2gl = torch.diag(torch.tensor([1., -1., -1., 1]))
-world2cam = world2cam @ cv2gl
+        uvs3d = torch.stack([
+            self.mano_layer.uv[..., 0], 
+            self.mano_layer.uv[..., 1],
+            torch.zeros_like(self.mano_layer.uv[..., 0])], -1) * 2 - 1
 
-vertices_cam = mano.vertices[0] @ world2cam[:3,:3].T + world2cam[:3,3].T
-vertices_ndc = vertices_cam @ K.T
-vertices_screen = vertices_ndc[..., :-1] / vertices_ndc[..., -1:]
+        vertices_uvshape = torch.tensor(uvs3d, dtype=torch.float32)
+        for ft, fv in zip(self.mano_layer.face_uvs, self.mano_layer.faces):
+            vertices_uvshape[ft] = vertices_front[fv]
+            
+        mano_uv_front = pyredner.Object(
+            vertices = uvs3d,
+            indices = torch.tensor(self.mano_layer.face_uvs, dtype=torch.int32),
+            uvs = vertices_uv, 
+            uv_indices = self.mano_layer.faces.to(torch.int32), 
+            material=pyredner.Material(
+                use_vertex_color = True
+            ),
+            colors = vertices_uvshape
+        )
+        
+        ''' Orthographic cameraを使用 '''
+        camera_uv = pyredner.Camera(
+            camera_type = pyredner.camera_type.orthographic,
+            position = torch.tensor([0, 0, 1.], dtype=torch.float32),
+            look_at = torch.tensor([0, 0, 0.], dtype=torch.float32),
+            up = torch.tensor([0, 1., 0], dtype=torch.float32),
+            resolution=self.mano_layer.tex_diffuse_mean.shape[:2],
+        )
+        
+        ''' vertex colorに頂点マスクを入れてレンダリング'''
+        g_buffer = pyredner.render_g_buffer(
+            scene = pyredner.Scene(camera = camera_uv, objects = [mano_uv_front]),
+            channels = [
+                pyredner.channels.vertex_color,
+                ],
+        )
+        vertex_color = g_buffer[..., :3]
 
-plt.imshow(bg_img)
-plt.scatter(vertices_screen[:, 0], vertices_screen[:, 1])
-plt.show()
-
-vertices_uv = vertices_screen / torch.tensor([resolution[1], resolution[0]], dtype=torch.float32)
-print(vertices_uv.max(), vertices_uv.min())
-
-''' 2d uv to 3d uv '''
-uvs3d = torch.stack([
-    mano_layer.uv[..., 0], 
-    mano_layer.uv[..., 1],
-    torch.zeros_like(uvs[..., 0])], -1) * 2 - 1
-
-mano_uv_redner = pyredner.Object(
-    uvs = vertices_uv, 
-    uv_indices = mano_layer.faces.to(torch.int32), 
-    vertices = uvs3d,
-    # vertices = torch.cat([mano_layer.uv, torch.ones(mano_layer.uv.shape[:-1] + (1,))], -1) * 2 - 1,
-    indices = torch.tensor(mano_layer.face_uvs, dtype=torch.int32),
-    material=pyredner.Material(
-        diffuse_reflectance = torch.tensor(bg_img).to(pyredner.get_device()),
-    )
-)
-# plt.scatter(uvs[:, 0], uvs[:, 1])
-# plt.show()
-
-camera_uv = pyredner.Camera(
-    camera_type = pyredner.camera_type.orthographic,
-    position = torch.tensor([0, 0, 1.], dtype=torch.float32),
-    look_at = torch.tensor([0, 0, 0.], dtype=torch.float32),
-    up = torch.tensor([0, 1., 0], dtype=torch.float32),
-    resolution=mano_layer.tex_diffuse_mean.shape[:2],
-)
+        return torch.where(vertex_color > 0, 1., 0.)
     
-projected_texture = pyredner.render_albedo(
-    pyredner.Scene(camera = camera_uv, objects = [mano_uv_redner]))
-
-vertices_normal_world = pyredner.compute_vertex_normal(mano.vertices[0], mano_layer.faces)
-vertices_normal_camera = vertices_normal_world @ torch.tensor(world2cam)[:3,:3].T
-vertices_front = vertices_normal_camera @ torch.tensor([0, 0, -1.], dtype=torch.float32)
-vertices_front = vertices_front.unsqueeze(-1).expand(-1, 3)
-
-vertices_uvshape = torch.tensor(uvs3d, dtype=torch.float32)
-for ft, fv in zip(mano_layer.face_uvs, mano_layer.faces):
-    vertices_uvshape[ft] = vertices_front[fv]
     
-mano_uv_front = pyredner.Object(
-    uvs = vertices_uv, 
-    uv_indices = mano_layer.faces.to(torch.int32), 
-    vertices = uvs3d,
-    indices = torch.tensor(mano_layer.face_uvs, dtype=torch.int32),
-    material=pyredner.Material(
-        use_vertex_color = True
-    ),
-    colors = vertices_uvshape
-)
+    def optimize_nimble(self, texture, mask, niter = 300, lr=1e-5, lambda_reg_tex=1e3):
+        ''' blend texture and nimble mean texture '''
+        coeffs_tex = torch.zeros(10, dtype=torch.float32, requires_grad=True, device=pyredner.get_device())
+        # optimizer = torch.optim.Adam([coeffs_tex], lr=lr)
+        optimizer = torch.optim.SGD([coeffs_tex], lr=lr)
+        
+        target_texture = torch.pow(texture, 2.2).detach()
+        mask = mask.detach()
+        
+        pp = ProgressPlot(line_names=['loss_mse', 'reg_tex'])
+        for i in range(niter):
+            optimizer.zero_grad()
+            diffuse_reflectance = torch.sum(
+                coeffs_tex * self.mano_layer.tex_diffuse_basis.to(pyredner.get_device()), dim=-1)
+            diffuse_reflectance += self.mano_layer.tex_diffuse_mean.to(pyredner.get_device())
+            
+            loss_mse = torch.pow((diffuse_reflectance - target_texture) * mask, 2).sum()
+            reg_tex = torch.pow(coeffs_tex, 2).sum() * lambda_reg_tex
+            loss = loss_mse + reg_tex
+            loss.backward()
+            optimizer.step()
+            
+            pp.update([[loss_mse.item(), reg_tex.item()]])
+            # if i % 10 == 0:
+            #     print(f'loss: {loss.item()}')
+            pp.finalize()
+        return torch.clamp(torch.pow(diffuse_reflectance, 1/2.2), 0, 1), coeffs_tex
+    
 
-g_buffer = pyredner.render_g_buffer(
-    scene = pyredner.Scene(camera = camera_uv, objects = [mano_uv_front]),
-    channels = [
-        pyredner.channels.shading_normal, 
-        pyredner.channels.geometry_normal,
-        pyredner.channels.vertex_color,
-        ],
-)
-shading_normal = g_buffer[..., :3]
-geometric_normal = g_buffer[..., 3:6]
-vertex_color = g_buffer[..., 6:]
-
-mask = torch.where(vertex_color > 0, 1., 0.)
-projected_texture_rgba = torch.cat([projected_texture, mask[..., :1]], -1)
-projected_texture_masked = projected_texture * mask + torch.ones_like(projected_texture) * (1 - mask)
-
-''' render mano with projected texture '''
-name = 'GPMF12'
-frame = 250
-# name = 'ABF10'
-# frame = 0
-bg_img2= np.array(
-    Image.open(f'data/HO3D_v3/train/{name}/rgb/{frame:04d}.jpg'), 
-    dtype=np.float32) / 255.0
-anno = load_ho_meta(f'data/HO3D_v3/train/{name}/meta/{frame:04d}.pkl')
-mano = mano_layer(anno)
-
-
-mano_redner = pyredner.Object(
-    vertices = mano.vertices[0], 
-    indices = mano_layer.faces.to(torch.int32), 
-    uvs = torch.tensor(uvs, dtype=torch.float32),
-    uv_indices = torch.tensor(mano_layer.face_uvs, dtype=torch.int32),
-    normals = pyredner.compute_vertex_normal(mano.vertices[0], mano_layer.faces),
-    material=pyredner.Material(
-        diffuse_reflectance = projected_texture_masked.to(pyredner.get_device()),
-    ),
-)
-
-scene = pyredner.Scene(camera = camera, objects = [mano_redner])
-img_projected = pyredner.render_albedo(scene)
-
-
-images = {
-    'uv': projected_texture.cpu().numpy(),
-    'vertex_front': vertex_color.cpu().numpy(), # * 0.5 + 0.5,
-    'mask': mask.cpu().numpy(),
-    'uv_alpha': projected_texture_rgba.cpu().numpy(),
-}
 
 def show_images(images):
     fig, axs = plt.subplots(1, len(images), figsize=(10, 5))
+    axs = [axs] if len(images) == 1 else axs
     for ax, (name, img) in zip(axs, images.items()):
         ax.imshow(img)
         ax.set_title(name)
         ax.axis('off')
     plt.show()
+            
 
-show_images(images)
-# axs[0].scatter(vertices_screen[:, 0], vertices_screen[:, 1], s=1)
-# axs[1].scatter(uvs[:, 0]*1024, uvs[:, 1]*1024, s=1)
+if __name__ == '__main__':
+    pyredner.set_print_timing(False)
+    
+    runner = Runner()
+    runner.load(name='ABF10', frame=0)
 
-images = {
-    'input': bg_img,
-    'output': img_projected.cpu().numpy(),
-}
-show_images(images)
+    # nimble mean texture
+    rendered_nimble = runner.render_with_texture(runner.mano_layer.tex_diffuse_mean.to(pyredner.get_device()))
+    
+    # textureをUV座標に投影
+    input_bg = runner.bg_img
+    projected_texture = runner.project_texture_toUV(runner.bg_img)
+    mask = runner.compute_front_mask()
+    projected_texture_masked = projected_texture * mask + torch.ones_like(projected_texture) * (1 - mask)
+    rendered_projected = runner.render_with_texture(projected_texture_masked.to(pyredner.get_device()))
 
+    nimble_tex, coeffs_tex = runner.optimize_nimble(
+        projected_texture_masked, mask, niter=100, lr=1e-5, lambda_reg_tex=1e3)
+    
+    # %%
+    rendered_nimble_opt = runner.render_with_texture(nimble_tex.to(pyredner.get_device()))
+    
+    blended_texture = mask * projected_texture + (1 - mask) * nimble_tex
+    
+    # 別のシーンでのテスト
+    runner.load(name='GPMF12', frame=250)
+    rendered_projected2 = runner.render_with_texture(projected_texture_masked.to(pyredner.get_device()))
+    rendered_projected_blended = runner.render_with_texture(blended_texture.to(pyredner.get_device()))
 
+    
 # %%
+    # 可視化
+    images = {
+        'uv projected': projected_texture.cpu().numpy(),
+        # 'vertex_front': vertex_color.cpu().numpy(), # * 0.5 + 0.5,
+        # 'mask': mask.cpu().numpy(),
+        'uv masked': projected_texture_masked.cpu().numpy(),
+        'nimble opt': nimble_tex.detach().cpu().numpy(),
+        'blended_texture': blended_texture.detach().cpu().numpy(),
+    }
+    show_images(images)
+
+    images = {
+        'input': input_bg,
+        # 'nimble mean': rendered_nimble.cpu().numpy(),
+        # 'projected': rendered_projected.cpu().numpy(),
+        'projected': rendered_projected2.cpu().numpy(),
+        'blended': rendered_projected_blended.detach().cpu().numpy(),
+    }
+    show_images(images)
+
+
+
+
 # %%
