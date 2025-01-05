@@ -2,14 +2,18 @@ import kaolin
 import torch
 
 class KaolinRenderer:
-    def __init__(self, verts, faces, uvs, tex_diff=None, tex_spec=None, tex_normal=None):
+    def __init__(self, verts, faces, uvs, face_uvs_idx=None, tex_diff=None, tex_spec=None, tex_normal=None, device='cuda:0'):
         verts = verts.to(torch.float32)
         faces = faces.to(torch.int64)
         uvs = uvs.to(torch.float32)
+        if face_uvs_idx is None:
+            face_uvs_idx = faces
+        else:
+            face_uvs_idx = face_uvs_idx.to(torch.int64)
 
-        self.device = 'cuda:0'
+        self.device = device
         self.mesh = kaolin.rep.SurfaceMesh(
-            verts, faces, uvs=uvs, face_uvs_idx=faces
+            verts, faces, uvs=uvs, face_uvs_idx=face_uvs_idx
         ).to(self.device)
         self.tex_diff = tex_diff.to(torch.float32).permute(2,0,1).unsqueeze(0) if tex_diff is not None else None
         self.tex_spec = tex_diff.to(torch.float32).unsqueeze(0) if tex_spec is not None else None
